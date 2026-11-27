@@ -185,7 +185,7 @@ opcion = st.sidebar.radio(
 )
 
 # ==========================================
-# CONFIGURACION TURN - TWILIO
+# CONFIGURACION DE CONEXION
 # ==========================================
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -261,7 +261,8 @@ def detectar_objetos(imagen, umbral, tamano):
             )
 
             etiqueta = (
-                f"{nombre} {probabilidad * 100:.1f}%"
+                f"{nombre} "
+                f"{probabilidad * 100:.1f}%"
             )
 
             cv2.rectangle(
@@ -428,35 +429,14 @@ elif opcion == "Camara en tiempo real":
         "a la camara de tu computadora."
     )
 
-    # Obtener servidores STUN y TURN
+    # Configuracion de conexion sin mensajes
+    # de credenciales en la interfaz.
 
     try:
 
         servidores_ice = obtener_servidores_ice()
 
-        tiene_turn = False
-
-        for servidor in servidores_ice:
-
-            urls = servidor["urls"]
-
-            if isinstance(urls, str):
-                urls = [urls]
-
-            if any(
-                url.startswith(("turn:", "turns:"))
-                for url in urls
-            ):
-                tiene_turn = True
-
-        if tiene_turn:
-    pass
-else:
-    pass
-
     except Exception:
-
-        tiene_turn = False
 
         servidores_ice = [
             {
@@ -468,12 +448,7 @@ else:
             }
         ]
 
-        st.warning(
-            "TURN no disponible. "
-            "Verifica las credenciales de Streamlit Secrets."
-        )
-
-    # Procesar video
+    # Procesamiento de video
 
     def procesar_video(frame):
 
@@ -518,7 +493,7 @@ else:
             format="bgr24"
         )
 
-    # Activar camara WebRTC
+    # Activar camara
 
     contexto = webrtc_streamer(
 
@@ -706,3 +681,4 @@ st.caption(
     "Proyecto de Inteligencia Artificial | "
     "Deep Learning | YOLO11 | UNAH"
 )
+
