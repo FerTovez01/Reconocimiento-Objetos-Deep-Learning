@@ -450,16 +450,9 @@ elif opcion == "Camara en tiempo real":
                 tiene_turn = True
 
         if tiene_turn:
-
-            st.success(
-                "Credenciales TURN obtenidas correctamente"
-            )
-
-        else:
-
-            st.warning(
-                "No se recibieron servidores TURN"
-            )
+    pass
+else:
+    pass
 
     except Exception:
 
