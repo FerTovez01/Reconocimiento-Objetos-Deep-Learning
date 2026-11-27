@@ -12,6 +12,7 @@ import torch
 
 from ultralytics import YOLO
 from streamlit_webrtc import webrtc_streamer, WebRtcMode
+from twilio.rest import Client
 from collections import Counter
 
 # ==========================================
@@ -27,8 +28,8 @@ st.set_page_config(
 st.title("Reconocimiento de Objetos con Deep Learning")
 
 st.markdown("""
-Sistema de detección de objetos mediante una red
-neuronal profunda YOLO11 preentrenada.
+Sistema inteligente de reconocimiento de objetos
+mediante una red neuronal profunda YOLO11 preentrenada.
 """)
 
 # ==========================================
@@ -85,7 +86,7 @@ nombres_es = [
 clases_es = dict(enumerate(nombres_es))
 
 # ==========================================
-# METRICAS DEL MODELO
+# METRICAS DE EVALUACION
 # ==========================================
 
 st.subheader("Rendimiento del modelo")
@@ -125,21 +126,20 @@ if os.path.exists("metricas.json"):
     )
 
     st.caption(
-        "mAP es la metrica principal de deteccion de objetos "
+        "mAP es la metrica principal de deteccion "
         "y no equivale al accuracy tradicional."
     )
 
     if metricas.get("dataset", "").lower() == "coco128":
+
         st.caption(
-            "Evaluacion demostrativa sobre COCO128; "
-            "no constituye una prueba independiente."
+            "Evaluacion demostrativa sobre COCO128. "
+            "No constituye una prueba independiente."
         )
 
 else:
 
-    st.warning(
-        "No se encontro el archivo metricas.json"
-    )
+    st.warning("No se encontro metricas.json")
 
 # ==========================================
 # MENU LATERAL
@@ -185,6 +185,43 @@ opcion = st.sidebar.radio(
 )
 
 # ==========================================
+# CONFIGURACION TURN - TWILIO
+# ==========================================
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def obtener_servidores_ice():
+
+    cliente = Client(
+        st.secrets["twilio"]["account_sid"],
+        st.secrets["twilio"]["auth_token"]
+    )
+
+    token = cliente.tokens.create(ttl=3600)
+
+    servidores = []
+
+    for servidor in token.ice_servers:
+
+        urls = servidor.get("urls") or servidor.get("url")
+
+        if not urls:
+            continue
+
+        configuracion = {
+            "urls": urls
+        }
+
+        if servidor.get("username"):
+            configuracion["username"] = servidor["username"]
+
+        if servidor.get("credential"):
+            configuracion["credential"] = servidor["credential"]
+
+        servidores.append(configuracion)
+
+    return servidores
+
+# ==========================================
 # FUNCION DE DETECCION
 # ==========================================
 
@@ -216,9 +253,7 @@ def detectar_objetos(imagen, umbral, tamano):
 
             clase = int(caja.cls.item())
 
-            probabilidad = float(
-                caja.conf.item()
-            )
+            probabilidad = float(caja.conf.item())
 
             nombre = clases_es.get(
                 clase,
@@ -226,8 +261,7 @@ def detectar_objetos(imagen, umbral, tamano):
             )
 
             etiqueta = (
-                f"{nombre} "
-                f"{probabilidad * 100:.1f}%"
+                f"{nombre} {probabilidad * 100:.1f}%"
             )
 
             cv2.rectangle(
@@ -251,7 +285,8 @@ def detectar_objetos(imagen, umbral, tamano):
             objetos.append({
                 "Objeto": nombre,
                 "Confianza": round(
-                    probabilidad * 100, 2
+                    probabilidad * 100,
+                    2
                 )
             })
 
@@ -288,9 +323,7 @@ def mostrar_resultados(objetos):
 
         with col1:
 
-            st.subheader(
-                "Confianza por objeto"
-            )
+            st.subheader("Confianza por objeto")
 
             st.bar_chart(
                 df.groupby("Objeto")["Confianza"].mean()
@@ -298,18 +331,14 @@ def mostrar_resultados(objetos):
 
         with col2:
 
-            st.subheader(
-                "Cantidad por categoria"
-            )
+            st.subheader("Cantidad por categoria")
 
             conteo = Counter(
                 objeto["Objeto"]
                 for objeto in objetos
             )
 
-            st.bar_chart(
-                pd.Series(conteo)
-            )
+            st.bar_chart(pd.Series(conteo))
 
         st.download_button(
             label="Descargar resultados CSV",
@@ -320,40 +349,7 @@ def mostrar_resultados(objetos):
 
     else:
 
-        st.warning(
-            "No se detectaron objetos"
-        )
-
-# ==========================================
-# CONFIGURACION STUN Y TURN
-# ==========================================
-
-servidores_ice = [
-    {
-        "urls": [
-            "stun:stun.l.google.com:19302",
-            "stun:stun1.l.google.com:19302",
-            "stun:stun2.l.google.com:19302"
-        ]
-    }
-]
-
-# Agregar TURN si existen credenciales
-# configuradas en Streamlit Secrets.
-
-try:
-
-    if "turn" in st.secrets:
-
-        servidores_ice.append({
-            "urls": st.secrets["turn"]["urls"],
-            "username": st.secrets["turn"]["username"],
-            "credential": st.secrets["turn"]["credential"]
-        })
-
-except Exception:
-
-    pass
+        st.warning("No se detectaron objetos")
 
 # ==========================================
 # OPCION 1: CARGAR IMAGEN
@@ -361,9 +357,7 @@ except Exception:
 
 if opcion == "Cargar imagen":
 
-    st.subheader(
-        "Deteccion de objetos en imagenes"
-    )
+    st.subheader("Deteccion de objetos en imagenes")
 
     archivo = st.file_uploader(
         "Selecciona una imagen",
@@ -384,9 +378,7 @@ if opcion == "Cargar imagen":
 
         if imagen is None:
 
-            st.error(
-                "No se pudo leer la imagen"
-            )
+            st.error("No se pudo leer la imagen")
 
             st.stop()
 
@@ -405,9 +397,7 @@ if opcion == "Cargar imagen":
             type="primary"
         ):
 
-            with st.spinner(
-                "Procesando imagen..."
-            ):
+            with st.spinner("Procesando imagen..."):
 
                 resultado, objetos = detectar_objetos(
                     imagen,
@@ -431,14 +421,66 @@ if opcion == "Cargar imagen":
 
 elif opcion == "Camara en tiempo real":
 
-    st.subheader(
-        "Reconocimiento mediante camara"
-    )
+    st.subheader("Reconocimiento en tiempo real")
 
     st.info(
         "Presiona START y permite el acceso "
         "a la camara de tu computadora."
     )
+
+    # Obtener servidores STUN y TURN
+
+    try:
+
+        servidores_ice = obtener_servidores_ice()
+
+        tiene_turn = False
+
+        for servidor in servidores_ice:
+
+            urls = servidor["urls"]
+
+            if isinstance(urls, str):
+                urls = [urls]
+
+            if any(
+                url.startswith(("turn:", "turns:"))
+                for url in urls
+            ):
+                tiene_turn = True
+
+        if tiene_turn:
+
+            st.success(
+                "Credenciales TURN obtenidas correctamente"
+            )
+
+        else:
+
+            st.warning(
+                "No se recibieron servidores TURN"
+            )
+
+    except Exception:
+
+        tiene_turn = False
+
+        servidores_ice = [
+            {
+                "urls": [
+                    "stun:stun.l.google.com:19302",
+                    "stun:stun1.l.google.com:19302",
+                    "stun:stun2.l.google.com:19302"
+                ]
+            }
+        ]
+
+        st.warning(
+            "TURN no disponible. "
+            "Verifica las credenciales de Streamlit Secrets."
+        )
+
+    # Procesar video
 
     def procesar_video(frame):
 
@@ -483,8 +525,11 @@ elif opcion == "Camara en tiempo real":
             format="bgr24"
         )
 
-    webrtc_streamer(
-        key="reconocimiento-objetos-v2",
+    # Activar camara WebRTC
+
+    contexto = webrtc_streamer(
+
+        key="reconocimiento-yolo11-turn",
 
         mode=WebRtcMode.SENDRECV,
 
@@ -496,12 +541,8 @@ elif opcion == "Camara en tiempo real":
 
         media_stream_constraints={
             "video": {
-                "width": {
-                    "ideal": 480
-                },
-                "height": {
-                    "ideal": 360
-                },
+                "width": {"ideal": 480},
+                "height": {"ideal": 360},
                 "frameRate": {
                     "ideal": 15,
                     "max": 20
@@ -513,9 +554,13 @@ elif opcion == "Camara en tiempo real":
         async_processing=True
     )
 
+    if contexto.state.playing:
+
+        st.success("Camara conectada")
+
     st.caption(
-        "Si la conexion tarda demasiado, "
-        "utiliza la modalidad Capturar fotografia."
+        "La velocidad depende de la conexion "
+        "y los recursos del servidor."
     )
 
 # ==========================================
@@ -524,15 +569,7 @@ elif opcion == "Camara en tiempo real":
 
 elif opcion == "Capturar fotografia":
 
-    st.subheader(
-        "Reconocimiento mediante fotografia"
-    )
-
-    st.info(
-        "Esta modalidad utiliza directamente "
-        "la camara del navegador para tomar "
-        "fotografias."
-    )
+    st.subheader("Reconocimiento mediante fotografia")
 
     fotografia = st.camera_input(
         "Tomar fotografia"
@@ -552,15 +589,11 @@ elif opcion == "Capturar fotografia":
 
         if imagen is None:
 
-            st.error(
-                "No se pudo procesar la fotografia"
-            )
+            st.error("No se pudo procesar la fotografia")
 
             st.stop()
 
-        with st.spinner(
-            "Reconociendo objetos..."
-        ):
+        with st.spinner("Reconociendo objetos..."):
 
             resultado, objetos = detectar_objetos(
                 imagen,
@@ -582,9 +615,7 @@ elif opcion == "Capturar fotografia":
 
 elif opcion == "Evaluacion del modelo":
 
-    st.subheader(
-        "Evaluacion de la red neuronal"
-    )
+    st.subheader("Evaluacion de la red neuronal")
 
     if metricas:
 
@@ -624,15 +655,13 @@ elif opcion == "Evaluacion del modelo":
         **mAP50-95:** precision promedio utilizando
         diferentes umbrales IoU.
 
-        **Confianza:** puntuacion asignada por el modelo
-        a cada deteccion individual.
+        **Confianza:** puntuacion asignada a cada
+        deteccion individual.
         """)
 
     else:
 
-        st.warning(
-            "No hay metricas disponibles"
-        )
+        st.warning("No hay metricas disponibles")
 
 # ==========================================
 # OPCION 5: INFORMACION DEL MODELO
@@ -640,9 +669,7 @@ elif opcion == "Evaluacion del modelo":
 
 elif opcion == "Informacion del modelo":
 
-    st.subheader(
-        "Arquitectura de Deep Learning"
-    )
+    st.subheader("Arquitectura de Deep Learning")
 
     col1, col2 = st.columns(2)
 
@@ -660,9 +687,7 @@ elif opcion == "Informacion del modelo":
         st.write("**Procesamiento:** OpenCV")
         st.write("**Interfaz:** Streamlit")
 
-    st.subheader(
-        "Categorias disponibles"
-    )
+    st.subheader("Categorias disponibles")
 
     df_clases = pd.DataFrame({
         "ID": list(clases_es.keys()),
@@ -674,13 +699,9 @@ elif opcion == "Informacion del modelo":
         use_container_width=True
     )
 
-    with st.expander(
-        "Capas de la red neuronal"
-    ):
+    with st.expander("Capas de la red neuronal"):
 
-        st.code(
-            str(modelo.model)
-        )
+        st.code(str(modelo.model))
 
 # ==========================================
 # PIE DE PAGINA
