@@ -7,12 +7,16 @@ import av
 import json
 import threading
 import os
+import time
+import torch
 
 from ultralytics import YOLO
 from streamlit_webrtc import webrtc_streamer, WebRtcMode
 from collections import Counter
 
+# ==========================================
 # CONFIGURACION DE LA PAGINA
+# ==========================================
 
 st.set_page_config(
     page_title="Reconocimiento de Objetos",
@@ -23,19 +27,28 @@ st.set_page_config(
 st.title("Reconocimiento de Objetos con Deep Learning")
 
 st.markdown("""
-Sistema de detección de objetos mediante una red neuronal
-profunda YOLO11 preentrenada.
+Sistema de detección de objetos mediante una red
+neuronal profunda YOLO11 preentrenada.
 """)
 
+# ==========================================
 # CARGAR MODELO
+# ==========================================
 
 @st.cache_resource
 def cargar_modelo():
-    return YOLO("yolo11n.pt"), threading.Lock()
+
+    modelo = YOLO("yolo11n.pt")
+
+    return modelo, threading.Lock()
 
 modelo, bloqueo = cargar_modelo()
 
+dispositivo = 0 if torch.cuda.is_available() else "cpu"
+
+# ==========================================
 # CLASES EN ESPAÑOL
+# ==========================================
 
 nombres_es = [
     "Persona", "Bicicleta", "Automovil",
@@ -71,9 +84,13 @@ nombres_es = [
 
 clases_es = dict(enumerate(nombres_es))
 
-# METRICAS DE EVALUACION
+# ==========================================
+# METRICAS DEL MODELO
+# ==========================================
 
 st.subheader("Rendimiento del modelo")
+
+metricas = {}
 
 if os.path.exists("metricas.json"):
 
@@ -103,25 +120,44 @@ if os.path.exists("metricas.json"):
     )
 
     st.caption(
-        f"Dataset: {metricas.get('dataset', 'No indicado')} | "
-        f"Resolucion evaluada: {metricas.get('imgsz', 'No indicada')}"
+        f"Dataset: {metricas.get('dataset', 'COCO128')} | "
+        f"Resolucion evaluada: {metricas.get('imgsz', 640)}"
     )
 
     st.caption(
-        "mAP es la metrica principal de deteccion de objetos. "
-        "No equivale al accuracy tradicional."
+        "mAP es la metrica principal de deteccion de objetos "
+        "y no equivale al accuracy tradicional."
     )
 
-else:
-    st.warning("No se encontro el archivo metricas.json")
+    if metricas.get("dataset", "").lower() == "coco128":
+        st.caption(
+            "Evaluacion demostrativa sobre COCO128; "
+            "no constituye una prueba independiente."
+        )
 
+else:
+
+    st.warning(
+        "No se encontro el archivo metricas.json"
+    )
+
+# ==========================================
 # MENU LATERAL
+# ==========================================
 
 st.sidebar.title("Configuracion")
 
-st.sidebar.info("Modelo: YOLO11n")
+st.sidebar.success("Modelo YOLO11n cargado")
 
-st.sidebar.metric("Categorias disponibles", 80)
+st.sidebar.metric(
+    "Categorias disponibles",
+    len(clases_es)
+)
+
+st.sidebar.write(
+    "Procesador:",
+    "GPU" if torch.cuda.is_available() else "CPU"
+)
 
 confianza = st.sidebar.slider(
     "Umbral de confianza",
@@ -142,23 +178,31 @@ opcion = st.sidebar.radio(
     [
         "Cargar imagen",
         "Camara en tiempo real",
+        "Capturar fotografia",
+        "Evaluacion del modelo",
         "Informacion del modelo"
     ]
 )
 
+# ==========================================
 # FUNCION DE DETECCION
+# ==========================================
 
 def detectar_objetos(imagen, umbral, tamano):
 
     with bloqueo:
+
         resultados = modelo.predict(
-            imagen,
+            source=imagen,
             conf=umbral,
             imgsz=tamano,
+            device=dispositivo,
+            half=torch.cuda.is_available(),
             verbose=False
         )
 
     imagen_resultado = imagen.copy()
+
     objetos = []
 
     for resultado in resultados:
@@ -166,16 +210,24 @@ def detectar_objetos(imagen, umbral, tamano):
         for caja in resultado.boxes:
 
             x1, y1, x2, y2 = map(
-                int, caja.xyxy[0].tolist()
+                int,
+                caja.xyxy[0].tolist()
             )
 
             clase = int(caja.cls.item())
-            probabilidad = float(caja.conf.item())
 
-            nombre = clases_es[clase]
+            probabilidad = float(
+                caja.conf.item()
+            )
+
+            nombre = clases_es.get(
+                clase,
+                str(clase)
+            )
 
             etiqueta = (
-                f"{nombre} {probabilidad * 100:.1f}%"
+                f"{nombre} "
+                f"{probabilidad * 100:.1f}%"
             )
 
             cv2.rectangle(
@@ -205,12 +257,113 @@ def detectar_objetos(imagen, umbral, tamano):
 
     return imagen_resultado, objetos
 
+# ==========================================
+# MOSTRAR RESULTADOS
+# ==========================================
 
+def mostrar_resultados(objetos):
+
+    st.metric(
+        "Total de objetos detectados",
+        len(objetos)
+    )
+
+    if objetos:
+
+        df = pd.DataFrame(objetos)
+
+        st.subheader("Resultados de deteccion")
+
+        st.dataframe(
+            df,
+            use_container_width=True
+        )
+
+        st.metric(
+            "Confianza promedio",
+            f"{df['Confianza'].mean():.2f}%"
+        )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            st.subheader(
+                "Confianza por objeto"
+            )
+
+            st.bar_chart(
+                df.groupby("Objeto")["Confianza"].mean()
+            )
+
+        with col2:
+
+            st.subheader(
+                "Cantidad por categoria"
+            )
+
+            conteo = Counter(
+                objeto["Objeto"]
+                for objeto in objetos
+            )
+
+            st.bar_chart(
+                pd.Series(conteo)
+            )
+
+        st.download_button(
+            label="Descargar resultados CSV",
+            data=df.to_csv(index=False),
+            file_name="resultados.csv",
+            mime="text/csv"
+        )
+
+    else:
+
+        st.warning(
+            "No se detectaron objetos"
+        )
+
+# ==========================================
+# CONFIGURACION STUN Y TURN
+# ==========================================
+
+servidores_ice = [
+    {
+        "urls": [
+            "stun:stun.l.google.com:19302",
+            "stun:stun1.l.google.com:19302",
+            "stun:stun2.l.google.com:19302"
+        ]
+    }
+]
+
+# Agregar TURN si existen credenciales
+# configuradas en Streamlit Secrets.
+
+try:
+
+    if "turn" in st.secrets:
+
+        servidores_ice.append({
+            "urls": st.secrets["turn"]["urls"],
+            "username": st.secrets["turn"]["username"],
+            "credential": st.secrets["turn"]["credential"]
+        })
+
+except Exception:
+
+    pass
+
+# ==========================================
 # OPCION 1: CARGAR IMAGEN
+# ==========================================
 
 if opcion == "Cargar imagen":
 
-    st.subheader("Deteccion de objetos en imagenes")
+    st.subheader(
+        "Deteccion de objetos en imagenes"
+    )
 
     archivo = st.file_uploader(
         "Selecciona una imagen",
@@ -230,7 +383,11 @@ if opcion == "Cargar imagen":
         )
 
         if imagen is None:
-            st.error("No se pudo leer la imagen")
+
+            st.error(
+                "No se pudo leer la imagen"
+            )
+
             st.stop()
 
         col1, col2 = st.columns(2)
@@ -248,7 +405,9 @@ if opcion == "Cargar imagen":
             type="primary"
         ):
 
-            with st.spinner("Procesando imagen..."):
+            with st.spinner(
+                "Procesando imagen..."
+            ):
 
                 resultado, objetos = detectar_objetos(
                     imagen,
@@ -264,60 +423,17 @@ if opcion == "Cargar imagen":
                     caption="Objetos detectados"
                 )
 
-            st.metric(
-                "Total de objetos detectados",
-                len(objetos)
-            )
+            mostrar_resultados(objetos)
 
-            if objetos:
-
-                df = pd.DataFrame(objetos)
-
-                st.subheader("Resultados")
-
-                st.dataframe(
-                    df,
-                    use_container_width=True
-                )
-
-                st.metric(
-                    "Confianza promedio",
-                    f"{df['Confianza'].mean():.2f}%"
-                )
-
-                st.subheader("Confianza por objeto")
-
-                st.bar_chart(
-                    df.groupby("Objeto")["Confianza"].mean()
-                )
-
-                st.subheader("Cantidad por categoria")
-
-                conteo = Counter(
-                    objeto["Objeto"]
-                    for objeto in objetos
-                )
-
-                st.bar_chart(
-                    pd.Series(conteo)
-                )
-
-                st.download_button(
-                    "Descargar resultados CSV",
-                    df.to_csv(index=False),
-                    "resultados.csv",
-                    "text/csv"
-                )
-
-            else:
-                st.warning("No se detectaron objetos")
-
-
+# ==========================================
 # OPCION 2: CAMARA EN TIEMPO REAL
+# ==========================================
 
 elif opcion == "Camara en tiempo real":
 
-    st.subheader("Reconocimiento mediante camara")
+    st.subheader(
+        "Reconocimiento mediante camara"
+    )
 
     st.info(
         "Presiona START y permite el acceso "
@@ -330,19 +446,35 @@ elif opcion == "Camara en tiempo real":
             format="bgr24"
         )
 
+        inicio = time.perf_counter()
+
         resultado, objetos = detectar_objetos(
             imagen,
             confianza,
             resolucion
         )
 
+        tiempo = time.perf_counter() - inicio
+
+        fps = 1 / max(tiempo, 0.000001)
+
         cv2.putText(
             resultado,
-            f"Objetos detectados: {len(objetos)}",
+            f"Objetos: {len(objetos)}",
             (15, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
-            (255, 255, 0),
+            (0, 255, 255),
+            2
+        )
+
+        cv2.putText(
+            resultado,
+            f"FPS inferencia: {fps:.1f}",
+            (15, 60),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 255),
             2
         )
 
@@ -352,43 +484,185 @@ elif opcion == "Camara en tiempo real":
         )
 
     webrtc_streamer(
-        key="reconocimiento-objetos",
+        key="reconocimiento-objetos-v2",
+
         mode=WebRtcMode.SENDRECV,
+
         video_frame_callback=procesar_video,
+
         rtc_configuration={
-            "iceServers": [
-                {
-                    "urls": [
-                        "stun:stun.l.google.com:19302"
-                    ]
-                }
-            ]
+            "iceServers": servidores_ice
         },
+
         media_stream_constraints={
             "video": {
-                "width": {"ideal": 480},
-                "height": {"ideal": 360},
-                "frameRate": {"ideal": 15}
+                "width": {
+                    "ideal": 480
+                },
+                "height": {
+                    "ideal": 360
+                },
+                "frameRate": {
+                    "ideal": 15,
+                    "max": 20
+                }
             },
             "audio": False
         },
+
         async_processing=True
     )
 
+    st.caption(
+        "Si la conexion tarda demasiado, "
+        "utiliza la modalidad Capturar fotografia."
+    )
 
-# OPCION 3: INFORMACION DEL MODELO
+# ==========================================
+# OPCION 3: CAPTURAR FOTOGRAFIA
+# ==========================================
+
+elif opcion == "Capturar fotografia":
+
+    st.subheader(
+        "Reconocimiento mediante fotografia"
+    )
+
+    st.info(
+        "Esta modalidad utiliza directamente "
+        "la camara del navegador para tomar "
+        "fotografias."
+    )
+
+    fotografia = st.camera_input(
+        "Tomar fotografia"
+    )
+
+    if fotografia is not None:
+
+        bytes_imagen = np.frombuffer(
+            fotografia.getvalue(),
+            dtype=np.uint8
+        )
+
+        imagen = cv2.imdecode(
+            bytes_imagen,
+            cv2.IMREAD_COLOR
+        )
+
+        if imagen is None:
+
+            st.error(
+                "No se pudo procesar la fotografia"
+            )
+
+            st.stop()
+
+        with st.spinner(
+            "Reconociendo objetos..."
+        ):
+
+            resultado, objetos = detectar_objetos(
+                imagen,
+                confianza,
+                resolucion
+            )
+
+        st.image(
+            resultado,
+            channels="BGR",
+            caption="Objetos reconocidos"
+        )
+
+        mostrar_resultados(objetos)
+
+# ==========================================
+# OPCION 4: EVALUACION DEL MODELO
+# ==========================================
+
+elif opcion == "Evaluacion del modelo":
+
+    st.subheader(
+        "Evaluacion de la red neuronal"
+    )
+
+    if metricas:
+
+        df_metricas = pd.DataFrame({
+            "Metrica": [
+                "Precision",
+                "Recall",
+                "mAP50",
+                "mAP50-95"
+            ],
+            "Porcentaje": [
+                metricas["Precision"],
+                metricas["Recall"],
+                metricas["mAP50"],
+                metricas["mAP50-95"]
+            ]
+        })
+
+        st.dataframe(
+            df_metricas,
+            use_container_width=True
+        )
+
+        st.bar_chart(
+            df_metricas.set_index("Metrica")
+        )
+
+        st.markdown("""
+        ### Interpretacion de resultados
+
+        **Precision:** proporcion de detecciones correctas.
+
+        **Recall:** proporcion de objetos reales detectados.
+
+        **mAP50:** precision promedio con IoU de 0.50.
+
+        **mAP50-95:** precision promedio utilizando
+        diferentes umbrales IoU.
+
+        **Confianza:** puntuacion asignada por el modelo
+        a cada deteccion individual.
+        """)
+
+    else:
+
+        st.warning(
+            "No hay metricas disponibles"
+        )
+
+# ==========================================
+# OPCION 5: INFORMACION DEL MODELO
+# ==========================================
 
 elif opcion == "Informacion del modelo":
 
-    st.subheader("Arquitectura del modelo")
+    st.subheader(
+        "Arquitectura de Deep Learning"
+    )
 
-    st.write("Modelo: YOLO11n")
-    st.write("Framework: PyTorch")
-    st.write("Dataset de preentrenamiento: COCO")
-    st.write("Tipo: Red neuronal profunda")
-    st.write("Categorias: 80")
+    col1, col2 = st.columns(2)
 
-    st.subheader("Clases disponibles")
+    with col1:
+
+        st.write("**Modelo:** YOLO11n")
+        st.write("**Framework:** PyTorch")
+        st.write("**Dataset:** COCO")
+        st.write("**Categorias:** 80")
+
+    with col2:
+
+        st.write("**Tipo:** Red neuronal profunda")
+        st.write("**Tarea:** Deteccion de objetos")
+        st.write("**Procesamiento:** OpenCV")
+        st.write("**Interfaz:** Streamlit")
+
+    st.subheader(
+        "Categorias disponibles"
+    )
 
     df_clases = pd.DataFrame({
         "ID": list(clases_es.keys()),
@@ -400,12 +674,17 @@ elif opcion == "Informacion del modelo":
         use_container_width=True
     )
 
-    with st.expander("Capas de la red neuronal"):
+    with st.expander(
+        "Capas de la red neuronal"
+    ):
 
-        st.code(str(modelo.model))
+        st.code(
+            str(modelo.model)
+        )
 
-
+# ==========================================
 # PIE DE PAGINA
+# ==========================================
 
 st.divider()
 
